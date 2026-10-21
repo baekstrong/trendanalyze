@@ -186,7 +186,7 @@ function render() {
       <td class="${r.contribution}" title="${Number.isFinite(r.contributionRate) ? r.contributionRate.toFixed(2) + '배' : ''}">${r.contribution}</td>
       <td class="${r.performance}" title="${Number.isFinite(r.performanceRate) ? r.performanceRate.toFixed(2) + '배' : ''}">${r.performance}</td>
       <td class="num">${fmt(r.chVideos)}</td>
-      <td>${r.publishedAt ? r.publishedAt.slice(2, 10).replace(/-/g, '.') : ''}</td>
+      <td>${esc((r.publishedAt || '').slice(2, 10).replace(/-/g, '.'))}</td>
       <td>${showingCollected
         ? `<button class="x" data-uncollect="${esc(r.id)}" title="수집 해제">✕</button>`
         : `<button class="x" data-block="${esc(r.channelId)}" title="${esc(r.channelTitle)} 숨기기">✕</button>`}</td>
@@ -239,7 +239,8 @@ $('showCollected').onclick = () => {
 $('csv').onclick = () => {
   const cols = ['id', 'title', 'channelTitle', 'views', 'subs', 'contribution', 'contributionRate',
                 'performance', 'performanceRate', 'chVideos', 'durationSec', 'publishedAt', 'likes', 'comments'];
-  const cell = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+  // 제목이 =, +, -, @로 시작하면 엑셀이 수식으로 실행하므로 앞에 ' 를 붙여 글자로 만든다
+  const cell = (v) => `"${String(v ?? '').replace(/^[=+\-@\t\r]/, "'$&").replace(/"/g, '""')}"`;
   const csv = '﻿' + [cols.join(','), ...visible().map((r) => cols.map((c) => cell(r[c])).join(','))].join('\n');
   const a = Object.assign(document.createElement('a'), {
     href: URL.createObjectURL(new Blob([csv], { type: 'text/csv' })),
