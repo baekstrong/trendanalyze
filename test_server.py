@@ -33,6 +33,27 @@ try:
 except ValueError:
     pass
 
+vtt = """WEBVTT
+Kind: captions
+Language: ko
+
+00:00:00.120 --> 00:00:02.230 align:start position:0%
+
+어깨<00:00:00.359><c> 아프신</c>
+
+00:00:02.230 --> 00:00:02.240 align:start position:0%
+어깨 아프신 분들
+ 
+00:00:31.000 --> 00:00:33.000
+이렇게 해보세요
+"""
+lines = server.parse_vtt(vtt)
+assert lines == [(0, '어깨 아프신'), (2, '어깨 아프신 분들'), (31, '이렇게 해보세요')], lines
+text = server.format_transcript(lines)
+assert text.startswith('[0:00]') and '[0:31] 이렇게 해보세요' in text, text
+assert server.transcript('bad id; rm -rf /') == ''
+assert server.enrich('audience', {'videoId': 'x'}) == {'videoId': 'x'}
+
 for t in server.TASKS.values():
     json.dumps(t['schema'])
 print('ok')

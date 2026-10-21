@@ -64,6 +64,7 @@
   .ai p { margin:6px 0; font-size:13px; }
   .ai ol { margin:4px 0 8px; padding-left:20px; font-size:13px; }
   .ai li { margin-bottom:4px; }
+  .tag { display:inline-block; padding:0 6px; border-radius:4px; background:var(--head); font-size:11px; }
 </style>
 </head>
 <body>
@@ -479,12 +480,46 @@ const AI_VIEW = {
     <p>시선: ${esc(r.focus)}<br>후킹: <b>${esc(r.hook)}</b><br>제목과의 역할: ${esc(r.titleFit)}</p>
     <p class="muted">강점</p><ul>${list(r.strengths)}</ul><p class="muted">약점</p><ul>${list(r.weaknesses)}</ul>`,
   reason: (r) => `
-    <p><b class="${{ 잘됨: 'Good', 평범: 'Normal', 부진: 'Worst' }[r.verdict] || ''}">${esc(r.verdict)}</b> · ${esc(r.summary)}</p>
-    <ul>${(r.factors || []).map((f) => `<li><b>${esc(f.factor)}</b>: ${esc(f.detail)}</li>`).join('')}</ul>
+    <p><b class="${{ 잘됨: 'Good', 평범: 'Normal', 부진: 'Worst' }[r.verdict] || ''}">${esc(r.verdict)}</b> · ${esc(r.summary)}
+      <span class="muted">신뢰도 ${esc(r.confidence || '-')} · ${r.sources?.transcript ? '자막 분석함' : '자막 없이 추정'}</span></p>
+    <p class="muted">핵심 요인</p>
+    <ul>${(r.factors || []).map((f) => `<li><span class="tag">${esc(f.area || '')}</span> <b>${esc(f.factor)}</b>
+      <span class="muted">영향 ${esc(f.impact || '')}</span><br>${esc(f.detail)}</li>`).join('')}</ul>
+    <p class="muted">제목</p><p>${esc(r.titleAnalysis || '')}</p>
+    <p class="muted">썸네일 (채널 내 잘된·안된 영상과 비교)</p><p>${esc(r.thumbnailAnalysis || '')}</p>
+    ${r.content ? `<p class="muted">내용</p><ul>
+      <li><b>훅(첫 30초)</b>: ${esc(r.content.hook)}</li>
+      <li><b>구성</b>: ${esc(r.content.structure)}</li>
+      <li><b>몰입 지점</b><ul>${list(r.content.retention)}</ul></li>
+      <li><b>전달 방식</b>: ${esc(r.content.delivery)}</li>
+      <li><b>약속 이행</b>: ${esc(r.content.promiseKept)}</li></ul>` : ''}
+    <p class="muted">세 요소의 조합</p><p>${esc(r.synergy || '')}</p>
     <p class="muted">최근 영상과 비교</p><p>${esc(r.compare)}</p>
     <p class="muted">내 영상에 적용할 점</p><ul>${list(r.lessons)}</ul>`,
 };
 const AI_TITLE = { audience: '시청층 추정', thumbnail: '썸네일 분석', reason: '잘된 이유' };
+const AI_WAIT = { reason: '자막·썸네일까지 보느라 보통 30~90초' };
+// 분석 형식이 바뀐 작업은 버전을 올려 예전 저장본을 쓰지 않는다
+const AI_VER = { reason: 2 };
+const aiKey = (task, id) => `ai:${task}${AI_VER[task] ? 'v' + AI_VER[task] : ''}:${id}`;
+
+// 잘된 이유: 제목·썸네일·내용(자막은 서버가 yt-dlp로 받음) + 같은 채널 잘된/안된 영상 썸네일 비교
+function reasonPayload(id, row, v, thumb, recent, recentList, comments) {
+  const ranked = [...recentList].sort((a, b) => b.views - a.views).filter((r) => r.thumb);
+  const compare = [...ranked.slice(0, 2).map((r) => ({ ...r, label: '채널에서 잘된 영상' })),
+                   ...ranked.slice(-1).map((r) => ({ ...r, label: '채널에서 안된 영상' }))]
+    .filter((r, i, a) => a.findIndex((x) => x.thumb === r.thumb) === i);
+  return {
+    videoId: id,
+    video: { title: row.title, views: row.views, likes: row.likes, comments: row.comments, publishedAt: row.publishedAt.slice(0, 10),
+             durationSec: row.durationSec, description: (v.snippet.description || '').slice(0, 1500), tags: (v.snippet.tags || []).slice(0, 15) },
+    channel: { title: row.channelTitle, subscribers: row.subs, recentMedianViews: recent && Math.round(recent.median) },
+    recentVideos: recentList.map(({ thumb: _, ...r }) => r),
+    topComments: comments.slice(0, 10).map((c) => `${c.textDisplay.slice(0, 300)} (좋아요 ${c.likeCount})`),
+    thumbOrder: ['이 영상', ...compare.map((r) => `${r.label}: ${r.title} (조회수 ${r.views})`)],
+    thumbUrls: [thumb, ...compare.map((r) => r.thumb)],
+  };
+}
 
 // 결과를 localStorage에 저장하고, 있으면 다시 부르지 않는다
 async function callAI(task, data, key, force) {
@@ -504,8 +539,8 @@ function showAI(task, saved) {
 }
 
 async function runAI(task, force) {
-  const ctx = detailCtx, key = `ai:${task}:${ctx.id}`;
-  if (!store.get(key, null) || force) $('ai-' + task).innerHTML = `<p class="muted">${AI_TITLE[task]} 중… (보통 10~40초)</p>`;
+  const ctx = detailCtx, key = aiKey(task, ctx.id);
+  if (!store.get(key, null) || force) $('ai-' + task).innerHTML = `<p class="muted">${AI_TITLE[task]} 중… (${AI_WAIT[task] || '보통 10~40초'})</p>`;
   try {
     const saved = await callAI(task, ctx.payload[task], key, force);
     if (detailCtx?.id === ctx.id) showAI(task, saved);   // 그사이 다른 영상을 열었으면 저장만
@@ -646,7 +681,8 @@ async function openDetail(id) {
         .items.map((it) => it.contentDetails.videoId);
       recentList = (await yt('videos', { part: 'snippet,statistics', id: ids.join(',') })).items
         .filter((s) => s.id !== id)
-        .map((s) => ({ title: s.snippet.title, views: +s.statistics.viewCount, publishedAt: s.snippet.publishedAt.slice(0, 10) }));
+        .map((s) => ({ title: s.snippet.title, views: +s.statistics.viewCount, publishedAt: s.snippet.publishedAt.slice(0, 10),
+                       thumb: (s.snippet.thumbnails.medium || s.snippet.thumbnails.default)?.url }));
       recent = compareToRecent(row.views, recentList.map((s) => s.views));
       units += 2;
     }
@@ -708,13 +744,10 @@ async function openDetail(id) {
         tags: v.snippet.tags || [], views: row.views, subscribers: row.subs,
         comments: comments.map((c) => `${c.textDisplay.slice(0, 500)} (좋아요 ${c.likeCount})`) },
       thumbnail: { title: row.title, thumbUrl: thumb },
-      reason: { video: { title: row.title, views: row.views, publishedAt: row.publishedAt.slice(0, 10),
-        durationSec: row.durationSec, tags: (v.snippet.tags || []).slice(0, 15) },
-        channel: { title: row.channelTitle, subscribers: row.subs, recentMedianViews: recent && Math.round(recent.median) },
-        recentVideos: recentList },
+      reason: reasonPayload(id, row, v, thumb, recent, recentList, comments),
     } };
     for (const task of Object.keys(AI_VIEW)) {
-      const cached = store.get(`ai:${task}:${id}`, null);
+      const cached = store.get(aiKey(task, id), null);
       if (cached) showAI(task, cached);
     }
   } catch (err) {

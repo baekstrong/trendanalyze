@@ -5,6 +5,8 @@ AI는 이 맥에 로그인된 Claude Code(`claude -p`)를 거쳐 구독으로 �
 import base64
 import json
 import os
+import re
+import shutil
 import subprocess
 import tempfile
 import urllib.request
@@ -70,22 +72,42 @@ TASKS = {
     },
     'reason': {
         'prompt': (
-            '이 영상이 같은 채널의 최근 영상들보다 잘됐는지(또는 안 됐는지)와 그 이유를 분석해라. '
-            '주제, 제목, 게시 시점, 길이를 최근 영상들과 비교한다. 조회수 외 지표는 없으니 추정임을 감안한다.\n'
+            '이 영상이 같은 채널의 최근 영상들보다 잘됐는지(또는 안 됐는지)와 그 이유를 제목·썸네일·내용을 종합해 분석해라.\n'
+            '- 제목: 어떤 약속·호기심·감정을 거는지, 최근 영상 제목과 무엇이 다른지\n'
+            '- 썸네일: 이미지 순서는 thumbOrder와 같다. 첫 장이 이 영상이고 나머지는 같은 채널의 비교용 영상이다. '
+            '문구·인물·색·구도가 비교 영상과 어떻게 다른지 본다.\n'
+            '- 내용: transcript는 자동 생성 자막이라 오타가 있을 수 있다. 첫 30초 훅, 전개 구조, 몰입을 붙잡는 지점, '
+            '제목·썸네일의 약속을 실제로 지키는지 본다. 자막이 없으면 설명·태그·댓글로 추정하고 그렇다고 밝힌다.\n'
+            '- 세 요소가 서로 어떻게 맞물려 성과를 냈는지(또는 어긋났는지) 결론을 낸다.\n'
+            '시청지속시간·클릭률 같은 내부 지표는 없으니 추정임을 감안한다.\n'
             '<data>\n{data}\n</data>'
         ),
         'schema': {
             'type': 'object',
             'properties': {
                 'verdict': {'type': 'string', 'enum': ['잘됨', '평범', '부진']},
-                'summary': {'type': 'string', 'description': '한두 문장 결론'},
+                'summary': {'type': 'string', 'description': '두세 문장 결론'},
+                'titleAnalysis': {'type': 'string', 'description': '제목이 건 약속과 최근 제목들과의 차이'},
+                'thumbnailAnalysis': {'type': 'string', 'description': '썸네일 구성과 비교 썸네일과의 차이'},
+                'content': {'type': 'object', 'properties': {
+                    'hook': {'type': 'string', 'description': '첫 30초에 무엇으로 붙잡는지'},
+                    'structure': {'type': 'string', 'description': '전개 구조 요약'},
+                    'retention': {'type': 'array', 'items': {'type': 'string'}, 'description': '몰입을 붙잡는 지점(가능하면 시간 표시)'},
+                    'delivery': {'type': 'string', 'description': '말투·편집·전달 방식'},
+                    'promiseKept': {'type': 'string', 'description': '제목·썸네일의 약속을 내용이 지키는지'}},
+                    'required': ['hook', 'structure', 'retention', 'delivery', 'promiseKept']},
+                'synergy': {'type': 'string', 'description': '제목·썸네일·내용이 함께 만든 효과'},
                 'factors': {'type': 'array', 'items': {'type': 'object', 'properties': {
+                    'area': {'type': 'string', 'enum': ['제목', '썸네일', '내용', '주제', '타이밍', '채널']},
+                    'impact': {'type': 'string', 'enum': ['큼', '보통', '작음']},
                     'factor': {'type': 'string'}, 'detail': {'type': 'string'}},
-                    'required': ['factor', 'detail']}, 'description': '성과를 가른 요인 3~5개'},
+                    'required': ['area', 'impact', 'factor', 'detail']}, 'description': '성과를 가른 요인 3~6개, 영향 큰 순'},
                 'compare': {'type': 'string', 'description': '잘된/안된 최근 영상과 비교해 다른 점'},
                 'lessons': {'type': 'array', 'items': {'type': 'string'}, 'description': '내 영상에 적용할 점'},
+                'confidence': {'type': 'string', 'enum': ['낮음', '보통', '높음']},
             },
-            'required': ['verdict', 'summary', 'factors', 'compare', 'lessons'],
+            'required': ['verdict', 'summary', 'titleAnalysis', 'thumbnailAnalysis', 'content', 'synergy',
+                         'factors', 'compare', 'lessons', 'confidence'],
         },
     },
     'patterns': {
@@ -197,7 +219,64 @@ def build_content(task, data):
     return blocks
 
 
+VIDEO_ID = re.compile(r'^[\w-]{11}$')
+TRANSCRIPT_MAX = 15000
+
+
+def parse_vtt(text):
+    """유튜브 자동 자막 VTT → [(초, 문장)] (자동 자막은 같은 줄이 겹쳐 나오므로 중복 제거)"""
+    out, sec, last = [], 0, None
+    for line in text.splitlines():
+        m = re.match(r'(\d+):(\d+):(\d+)\.\d+ -->', line)
+        if m:
+            h, mi, se = map(int, m.groups())
+            sec = h * 3600 + mi * 60 + se
+            continue
+        line = re.sub(r'<[^>]+>', '', line).strip()
+        if not line or line == 'WEBVTT' or re.match(r'^(Kind|Language):', line) or line == last:
+            continue
+        out.append((sec, line))
+        last = line
+    return out
+
+
+def format_transcript(lines):
+    """30초마다 [m:ss] 표시를 넣은 한 덩어리 텍스트. 길면 앞부분(훅)을 살리고 뒤를 자른다"""
+    parts, mark = [], -30
+    for sec, line in lines:
+        if sec - mark >= 30:
+            mark = sec - sec % 30
+            parts.append(f'\n[{sec // 60}:{sec % 60:02d}] ')
+        parts.append(line + ' ')
+    text = ''.join(parts).strip()
+    return text if len(text) <= TRANSCRIPT_MAX else text[:TRANSCRIPT_MAX] + ' …(이후 생략)'
+
+
+def transcript(video_id):
+    """yt-dlp로 한국어 자막(원본 자동 자막 우선)을 받는다. 실패하면 빈 문자열"""
+    if not VIDEO_ID.match(video_id or '') or not shutil.which('yt-dlp'):
+        return ''
+    with tempfile.TemporaryDirectory() as d:
+        try:
+            subprocess.run(['yt-dlp', '--skip-download', '--write-auto-subs', '--write-subs', '--sub-langs', 'ko-orig,ko',
+                            '--sub-format', 'vtt', '-o', '%(id)s.%(ext)s', '--no-warnings', '--quiet', '--',
+                            f'https://www.youtube.com/watch?v={video_id}'], cwd=d, capture_output=True, timeout=60)
+        except subprocess.TimeoutExpired:
+            return ''
+        files = sorted(Path(d).glob('*.vtt'), key=lambda f: ('.ko-orig.' not in f.name, f.name))
+        return format_transcript(parse_vtt(files[0].read_text(errors='ignore'))) if files else ''
+
+
+def enrich(task, data):
+    """분석 전에 서버에서만 구할 수 있는 데이터를 붙인다"""
+    if task == 'reason' and data.get('videoId'):
+        text = transcript(data['videoId'])
+        data = {**data, 'transcript': text or '(자막을 가져오지 못함)'}
+    return data
+
+
 def ask_claude(task, data):
+    data = enrich(task, data)
     msg = {'type': 'user', 'message': {'role': 'user', 'content': build_content(task, data)}}
     cmd = ['claude', '-p', '--model', MODEL, '--tools', '', '--setting-sources', '', '--strict-mcp-config',
            '--no-session-persistence', '--system-prompt', SYSTEM, '--json-schema', json.dumps(TASKS[task]['schema']),
@@ -210,7 +289,10 @@ def ask_claude(task, data):
             if d.get('is_error'):
                 raise RuntimeError(d.get('result') or 'Claude 오류')
             out = d.get('structured_output')
-            return out if out is not None else json.loads(d['result'])
+            out = out if out is not None else json.loads(d['result'])
+            if task == 'reason':
+                out['sources'] = {'transcript': bool(data.get('transcript')) and not data['transcript'].startswith('(')}
+            return out
     raise RuntimeError((p.stderr or 'Claude 응답 없음').strip()[-500:])
 
 
