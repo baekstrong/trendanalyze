@@ -1,6 +1,6 @@
 // node metrics.test.js
 const assert = require('assert');
-const { grade, durationSec, toRow } = require('./metrics.js');
+const { grade, durationSec, toRow, compareToRecent } = require('./metrics.js');
 
 assert.equal(durationSec('PT4M43S'), 283);
 assert.equal(durationSec('PT1H2M'), 3720);
@@ -27,4 +27,9 @@ const hidden = toRow(
 );
 assert.equal(hidden.performance, '-');
 assert.equal(hidden.contribution, '-');
+const cmp = compareToRecent(500, [100, 300, 500, 900]);
+assert.equal(cmp.median, 400);
+assert.equal(cmp.rank, 2);
+assert.equal(cmp.ratio, 1.25);
+assert.equal(compareToRecent(1, []), null);
 console.log('ok');

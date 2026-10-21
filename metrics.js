@@ -50,4 +50,13 @@ function toRow(v, ch) {
   };
 }
 
-if (typeof module !== 'undefined') module.exports = { grade, durationSec, toRow, GRADES };
+// 채널 최근 영상들 사이에서 이 영상 위치 (평생 평균보다 지금 채널 체급에 가깝다)
+function compareToRecent(views, recentViews) {
+  const list = recentViews.filter(Number.isFinite).sort((a, b) => b - a);
+  if (!list.length) return null;
+  const mid = list.length >> 1;
+  const median = list.length % 2 ? list[mid] : (list[mid - 1] + list[mid]) / 2;
+  return { median, ratio: views / median, rank: list.filter((v) => v > views).length + 1, total: list.length };
+}
+
+if (typeof module !== 'undefined') module.exports = { grade, durationSec, toRow, compareToRecent, GRADES };

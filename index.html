@@ -33,6 +33,25 @@
   .num { font-variant-numeric:tabular-nums; }
   .x { border:none; background:none; color:var(--muted); padding:0 4px; }
   .empty { padding:40px; text-align:center; color:var(--muted); }
+  #shade { position:fixed; inset:0; background:#0006; z-index:5; display:none; }
+  #panel { position:fixed; top:0; right:0; bottom:0; width:min(600px, 100%); z-index:6; background:var(--bg); border-left:1px solid var(--line);
+           overflow-y:auto; padding:16px; transform:translateX(100%); transition:transform .2s; }
+  body.detail #shade { display:block; }
+  body.detail #panel { transform:none; }
+  #panel h2 { font-size:17px; margin:12px 0 4px; }
+  #panel h3 { font-size:14px; margin:20px 0 8px; padding-top:12px; border-top:1px solid var(--line); }
+  #panel .big { width:100%; aspect-ratio:16/9; object-fit:cover; border-radius:8px; background:var(--head); display:block; }
+  .grid { display:grid; grid-template-columns:repeat(3, 1fr); gap:8px; }
+  .grid div { background:var(--head); border-radius:6px; padding:8px; }
+  .grid b { display:block; font-size:16px; font-variant-numeric:tabular-nums; }
+  .grid small, .muted { color:var(--muted); font-size:12px; }
+  .tags span { display:inline-block; margin:0 4px 4px 0; padding:2px 8px; border-radius:99px; background:var(--head); font-size:12px; }
+  .desc { white-space:pre-wrap; font-size:13px; max-height:200px; overflow-y:auto; background:var(--head); padding:8px; border-radius:6px; }
+  .cmt { padding:8px 0; border-bottom:1px solid var(--line); font-size:13px; white-space:pre-wrap; }
+  .close { position:sticky; top:0; float:right; }
+  .ai h4 { margin:14px 0 6px; font-size:14px; }
+  .ai ul { margin:4px 0 8px; padding-left:18px; font-size:13px; }
+  .ai p { margin:6px 0; font-size:13px; }
 </style>
 </head>
 <body>
@@ -51,7 +70,10 @@
       <option value="1">50개</option><option value="2" selected>100개</option><option value="4">200개</option><option value="10">500개</option>
     </select>
     <button class="primary">검색</button>
+    <button type="button" id="refresh" title="저장된 결과 무시하고 다시 검색 (API 사용)">↻ 새로 검색</button>
   </form>
+  <select id="hist" title="저장된 검색 결과 (API 사용 안 함)" style="max-width:240px"></select>
+  <button id="histDel" title="선택한 내역 삭제">내역 삭제</button>
   <select id="len" title="영상 길이">
     <option value="">전체 길이</option><option value="short">쇼츠(3분 이하)</option><option value="long">롱폼</option>
   </select>
@@ -79,6 +101,8 @@
     <tbody id="rows"></tbody>
   </table>
 </div>
+<div id="shade"></div>
+<aside id="panel" aria-label="영상 상세"></aside>
 <script src="metrics.js"></script>
 <script>
 const $ = (id) => document.getElementById(id);
@@ -115,8 +139,45 @@ async function yt(path, params) {
 
 const chunk = (a, n) => Array.from({ length: Math.ceil(a.length / n) }, (_, i) => a.slice(i * n, i * n + n));
 
-async function search(e) {
-  e.preventDefault();
+// 검색 내역: 같은 조건이면 API를 다시 부르지 않고 저장된 결과를 쓴다
+const HISTORY_MAX = 30;
+let searches = store.get('history', []);
+const searchOpts = () => ({ q: $('q').value.trim(), order: $('order').value, period: $('period').value, pages: $('pages').value });
+const optsKey = (o) => [o.q.toLowerCase(), o.order, o.period, o.pages].join('|');
+const optLabel = (id) => $(id).querySelector(`option[value="${$(id).value}"]`)?.textContent || '';
+
+function saveHistory(opts, list) {
+  const label = [opts.q, optLabel('order'), optLabel('period'), optLabel('pages')].join(' · ');
+  searches = [{ key: optsKey(opts), label, opts, at: Date.now(), rows: list },
+             ...searches.filter((h) => h.key !== optsKey(opts))].slice(0, HISTORY_MAX);
+  // localStorage 5MB를 넘으면 오래된 내역부터 버린다
+  for (;;) {
+    try { localStorage.setItem('history', JSON.stringify(searches)); break; }
+    catch { if (searches.length <= 1) break; searches.pop(); }
+  }
+  renderHistory();
+}
+
+function renderHistory() {
+  const when = (t) => new Date(t).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  $('hist').innerHTML = `<option value="">검색 내역 (${searches.length})</option>` +
+    searches.map((h, i) => `<option value="${i}">${esc(h.label)} · ${h.rows.length}개 · ${when(h.at)}</option>`).join('');
+}
+
+function loadHistory(h) {
+  Object.entries(h.opts).forEach(([k, v]) => ($(k).value = v));
+  showingCollected = false; $('showCollected').classList.remove('on');
+  rows = h.rows;
+  sort = { k: null, dir: -1 };
+  render();
+  setStatus(`저장된 결과 ${rows.length}개 · ${new Date(h.at).toLocaleString('ko-KR')} 검색 · 0유닛`);
+}
+
+async function search(e, force = false) {
+  e?.preventDefault();
+  const opts = searchOpts();
+  const saved = searches.find((h) => h.key === optsKey(opts));
+  if (saved && !force) return loadHistory(saved);
   if (!$('key').value.trim()) return setStatus('API 키를 먼저 넣어주세요');
   store.set('apiKey', $('key').value.trim());
   showingCollected = false; $('showCollected').classList.remove('on');
@@ -145,6 +206,7 @@ async function search(e) {
       units++;
     }
     rows = videos.map((v) => toRow(v, channels[v.snippet.channelId]));
+    saveHistory(opts, rows);
     sort = { k: null, dir: -1 };
     render();
     setStatus(`${rows.length}개 · 이번 검색 ${units}유닛 · 오늘 약 ${addQuota(units).toLocaleString()}/10,000`);
@@ -179,8 +241,8 @@ function render() {
     <tr>
       <td><input type="checkbox" data-id="${esc(r.id)}"></td>
       <td>${r.caption ? 'CC' : ''}</td>
-      <td><a class="thumb" href="https://youtu.be/${esc(r.id)}" target="_blank" rel="noopener"><img src="${esc(r.thumb || '')}" alt="" loading="lazy"><span>${fmtDur(r.durationSec)}</span></a></td>
-      <td class="title"><a href="https://youtu.be/${esc(r.id)}" target="_blank" rel="noopener">${esc(r.title)}</a><div class="ch">${esc(r.channelTitle)}</div></td>
+      <td><a class="thumb" href="#" data-open="${esc(r.id)}"><img src="${esc(r.thumb || '')}" alt="" loading="lazy"><span>${fmtDur(r.durationSec)}</span></a></td>
+      <td class="title"><a href="#" data-open="${esc(r.id)}">${esc(r.title)}</a><div class="ch">${esc(r.channelTitle)}</div></td>
       <td class="num">${fmt(r.views)}</td>
       <td class="num">${fmt(r.subs)}</td>
       <td class="${r.contribution}" title="${Number.isFinite(r.contributionRate) ? r.contributionRate.toFixed(2) + '배' : ''}">${r.contribution}</td>
@@ -198,6 +260,16 @@ function setStatus(t) { $('status').textContent = t; }
 const checkedIds = () => [...document.querySelectorAll('#rows input:checked')].map((c) => c.dataset.id);
 
 $('f').onsubmit = search;
+$('refresh').onclick = () => $('f').reportValidity() && search(null, true);
+$('hist').onchange = () => searches[$('hist').value] && loadHistory(searches[$('hist').value]);
+$('histDel').onclick = () => {
+  const i = $('hist').value;
+  if (i === '') return setStatus('삭제할 내역을 먼저 고르세요');
+  searches.splice(+i, 1);
+  store.set('history', searches);
+  renderHistory();
+};
+renderHistory();
 $('len').onchange = $('minViews').oninput = render;
 $('all').onchange = (e) => document.querySelectorAll('#rows input').forEach((c) => (c.checked = e.target.checked));
 
@@ -209,6 +281,8 @@ document.querySelector('thead').onclick = (e) => {
 };
 
 $('rows').onclick = (e) => {
+  const open = e.target.closest('[data-open]');
+  if (open) { e.preventDefault(); return openDetail(open.dataset.open); }
   const b = e.target.closest('button');
   if (!b) return;
   if (b.dataset.block) {
@@ -249,6 +323,148 @@ $('csv').onclick = () => {
   a.click();
   URL.revokeObjectURL(a.href);
 };
+
+const CATEGORY = { 1: '영화/애니', 2: '자동차', 10: '음악', 15: '동물', 17: '스포츠', 19: '여행', 20: '게임', 22: '인물/블로그',
+                   23: '코미디', 24: '엔터테인먼트', 25: '뉴스/정치', 26: '노하우/스타일', 27: '교육', 28: '과학기술', 29: '비영리/사회운동' };
+const stat = (label, value, sub = '') => `<div><small>${label}</small><b>${value}</b><small>${sub}</small></div>`;
+const pct = (a, b) => (b ? (a / b * 100).toFixed(2) + '%' : '-');
+
+// AI 분석: server.py가 claude -p로 중계. 결과는 영상별로 저장해 다시 부르지 않는다
+let detailCtx = null;
+const list = (a) => (a || []).map((x) => `<li>${esc(x)}</li>`).join('');
+const chips = (a) => `<div class="tags">${(a || []).map((x) => `<span>${esc(x)}</span>`).join('')}</div>`;
+const AI_VIEW = {
+  audience: (r) => `
+    <p><b>${esc(r.summary)}</b> <span class="muted">신뢰도 ${esc(r.confidence)}</span></p>
+    <p>연령 ${esc(r.age)} · 성별 ${esc(r.gender)}</p>${chips(r.segments)}
+    <p class="muted">원하는 것 / 고민</p><ul>${list(r.needs)}</ul>
+    <p class="muted">근거 댓글</p><ul>${(r.evidence || []).map((e) => `<li>“${esc(e.comment)}” → ${esc(e.reason)}</li>`).join('')}</ul>`,
+  thumbnail: (r) => `
+    <p>문구: <b>${esc(r.text || '없음')}</b></p>
+    <p>인물: ${esc(r.people)}</p>${chips(r.colors)}
+    <p>시선: ${esc(r.focus)}<br>후킹: <b>${esc(r.hook)}</b><br>제목과의 역할: ${esc(r.titleFit)}</p>
+    <p class="muted">강점</p><ul>${list(r.strengths)}</ul><p class="muted">약점</p><ul>${list(r.weaknesses)}</ul>`,
+};
+const AI_TITLE = { audience: '시청층 추정', thumbnail: '썸네일 분석' };
+
+function showAI(task, saved) {
+  $('ai-' + task).innerHTML = `<h4>${AI_TITLE[task]} <button class="x" data-ai="${task}" data-redo="1" title="다시 분석">↻</button>
+    <span class="muted">${new Date(saved.at).toLocaleString('ko-KR')}</span></h4>${AI_VIEW[task](saved.result)}`;
+}
+
+async function runAI(task, force) {
+  const ctx = detailCtx, key = `ai:${task}:${ctx.id}`;
+  const cached = store.get(key, null);
+  if (cached && !force) return showAI(task, cached);
+  const box = $('ai-' + task);
+  box.innerHTML = `<p class="muted">${AI_TITLE[task]} 중… (보통 10~40초)</p>`;
+  try {
+    const res = await fetch('/ai', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ task, data: task === 'thumbnail' ? { title: ctx.data.title, thumbUrl: ctx.thumb } : ctx.data }) });
+    const body = await res.json().catch(() => ({ error: 'server.py로 연 화면에서만 AI를 쓸 수 있어요' }));
+    if (!res.ok) throw new Error(body.error);
+    const saved = { at: Date.now(), result: body.result };
+    store.set(key, saved);
+    if (detailCtx?.id === ctx.id) showAI(task, saved);   // 그사이 다른 영상을 열었으면 저장만
+  } catch (err) {
+    if (detailCtx?.id === ctx.id) box.innerHTML = `<p>AI 오류: ${esc(err.message)}</p>`;
+  }
+}
+
+$('panel').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-ai]');
+  if (b && detailCtx) runAI(b.dataset.ai, !!b.dataset.redo);
+});
+
+function closeDetail() { document.body.classList.remove('detail'); }
+$('shade').onclick = closeDetail;
+document.addEventListener('keydown', (e) => e.key === 'Escape' && closeDetail());
+
+// 상세 1건 ≈ 5유닛: 영상, 채널, 채널 업로드 목록, 최근 영상 통계, 댓글
+async function openDetail(id) {
+  const P = $('panel');
+  document.body.classList.add('detail');
+  P.innerHTML = '<p class="muted">불러오는 중…</p>';
+  try {
+    const v = (await yt('videos', { part: 'snippet,statistics,contentDetails,topicDetails', id })).items[0];
+    if (!v) throw new Error('영상을 찾을 수 없어요 (삭제·비공개)');
+    const ch = (await yt('channels', { part: 'snippet,statistics,contentDetails', id: v.snippet.channelId })).items[0];
+    const row = toRow(v, ch);
+    let units = 2, recent = null, comments = [], commentNote = '';
+
+    const uploads = ch?.contentDetails?.relatedPlaylists?.uploads;
+    if (uploads) {
+      const ids = (await yt('playlistItems', { part: 'contentDetails', playlistId: uploads, maxResults: 50 }))
+        .items.map((it) => it.contentDetails.videoId);
+      const stats = (await yt('videos', { part: 'statistics', id: ids.join(',') })).items;
+      recent = compareToRecent(row.views, stats.filter((s) => s.id !== id).map((s) => +s.statistics.viewCount));
+      units += 2;
+    }
+    try {
+      comments = (await yt('commentThreads', { part: 'snippet', videoId: id, order: 'relevance', maxResults: 20, textFormat: 'plainText' }))
+        .items.map((c) => c.snippet.topLevelComment.snippet);
+      units++;
+    } catch (err) { commentNote = /disabled/i.test(err.message) ? '댓글이 막혀 있어요' : '댓글을 못 불러왔어요: ' + err.message; }
+    setStatus(`상세 ${units}유닛 · 오늘 약 ${addQuota(units).toLocaleString()}/10,000`);
+
+    const t = v.snippet.thumbnails;
+    const thumb = (t.maxres || t.standard || t.high || t.medium || t.default).url;
+    const days = Math.max(1, (Date.now() - new Date(row.publishedAt)) / 864e5);
+    const likes = v.statistics.likeCount;
+    P.innerHTML = `
+      <button class="close" onclick="closeDetail()">닫기 ✕</button>
+      <a href="${esc(thumb)}" target="_blank" rel="noopener" title="원본 썸네일 열기"><img class="big" src="${esc(thumb)}" alt="썸네일"></a>
+      <h2>${esc(row.title)}</h2>
+      <div class="muted">${esc(row.channelTitle)} · ${new Date(row.publishedAt).toLocaleString('ko-KR')} · ${fmtDur(row.durationSec)}
+        · ${v.contentDetails.definition === 'hd' ? 'HD' : 'SD'}${row.caption ? ' · 자막' : ''}${CATEGORY[v.snippet.categoryId] ? ' · ' + CATEGORY[v.snippet.categoryId] : ''}</div>
+      <p><a href="https://youtu.be/${esc(id)}" target="_blank" rel="noopener">▶ 유튜브에서 보기</a></p>
+
+      <h3>AI 분석 <span class="muted">Claude · 추정치</span></h3>
+      <button data-ai="audience">시청층 추정</button> <button data-ai="thumbnail">썸네일 분석</button>
+      <div id="ai-audience" class="ai"></div>
+      <div id="ai-thumbnail" class="ai"></div>
+
+      <h3>반응</h3>
+      <div class="grid">
+        ${stat('조회수', fmt(row.views), `하루 평균 ${fmt(Math.round(row.views / days))}`)}
+        ${stat('좋아요', likes === undefined ? '숨김' : fmt(+likes), likes === undefined ? '' : `조회 대비 ${pct(+likes, row.views)}`)}
+        ${stat('댓글', fmt(row.comments), `조회 대비 ${pct(row.comments, row.views)}`)}
+      </div>
+
+      <h3>채널 안에서의 위치</h3>
+      <div class="grid">
+        ${stat('기여도', `<span class="${row.contribution}">${row.contribution}</span>`, Number.isFinite(row.contributionRate) ? `채널 평균의 ${row.contributionRate.toFixed(1)}배` : '')}
+        ${stat('성과도', `<span class="${row.performance}">${row.performance}</span>`, Number.isFinite(row.performanceRate) ? `구독자의 ${row.performanceRate.toFixed(1)}배` : '')}
+        ${recent ? stat('최근 영상 중', `${recent.rank}위 / ${recent.total + 1}`, `최근 중앙값 ${fmt(Math.round(recent.median))} · ${recent.ratio.toFixed(1)}배`) : stat('최근 영상 중', '-')}
+      </div>
+      <p class="muted">구독자 ${fmt(row.subs)} · 영상 ${fmt(row.chVideos)}개 · 채널 개설 ${ch ? new Date(ch.snippet.publishedAt).toLocaleDateString('ko-KR') : '-'}${ch?.snippet.country ? ' · ' + esc(ch.snippet.country) : ''}</p>
+
+      <h3>태그</h3>
+      <div class="tags">${(v.snippet.tags || []).map((g) => `<span>${esc(g)}</span>`).join('') || '<span class="muted">태그 없음</span>'}</div>
+
+      <h3>설명</h3>
+      <div class="desc">${esc(v.snippet.description || '설명 없음')}</div>
+
+      <h3>인기 댓글 ${comments.length ? comments.length + '개' : ''}</h3>
+      <p class="muted">시청층은 공개되지 않아서, 댓글 말투와 내용으로 짐작하는 게 현실적인 방법이에요.</p>
+      ${comments.map((c) => `<div class="cmt">${esc(c.textDisplay)}<div class="muted">👍 ${fmt(c.likeCount)} · ${new Date(c.publishedAt).toLocaleDateString('ko-KR')}</div></div>`).join('')
+        || `<p class="muted">${esc(commentNote || '댓글 없음')}</p>`}
+
+      <h3>볼 수 없는 정보</h3>
+      <p class="muted">시청지속시간, 시청자 연령·성별·지역, 노출 클릭률, 유입 경로는 YouTube Analytics 데이터라 채널 주인만 볼 수 있어요.</p>`;
+    P.scrollTop = 0;
+    detailCtx = { id, thumb, data: {
+      title: row.title, channel: row.channelTitle, description: (v.snippet.description || '').slice(0, 2000),
+      tags: v.snippet.tags || [], views: row.views, subscribers: row.subs,
+      comments: comments.map((c) => `${c.textDisplay.slice(0, 500)} (좋아요 ${c.likeCount})`) } };
+    for (const task of Object.keys(AI_VIEW)) {
+      const cached = store.get(`ai:${task}:${id}`, null);
+      if (cached) showAI(task, cached);
+    }
+  } catch (err) {
+    P.innerHTML = `<button class="close" onclick="closeDetail()">닫기 ✕</button><p>오류: ${esc(err.message)}</p>`;
+  }
+}
 
 render();
 </script>
