@@ -52,6 +52,8 @@
   .ai h4 { margin:14px 0 6px; font-size:14px; }
   .ai ul { margin:4px 0 8px; padding-left:18px; font-size:13px; }
   .ai p { margin:6px 0; font-size:13px; }
+  .ai ol { margin:4px 0 8px; padding-left:20px; font-size:13px; }
+  .ai li { margin-bottom:4px; }
 </style>
 </head>
 <body>
@@ -81,6 +83,13 @@
   <button id="collect">선택 수집</button>
   <button id="showCollected">수집한 영상</button>
   <button id="csv">CSV</button>
+  <select id="aiTool" title="Claude 분석 (선택한 영상이 있으면 그 영상, 없으면 조회수 상위)">
+    <option value="">AI 분석…</option>
+    <option value="patterns">결과 패턴 요약</option>
+    <option value="keywords">키워드 확장</option>
+    <option value="ideas">댓글로 아이디어</option>
+    <option value="plan">내 영상 기획</option>
+  </select>
   <span id="status"></span>
 </header>
 <div class="wrap">
@@ -344,8 +353,25 @@ const AI_VIEW = {
     <p>인물: ${esc(r.people)}</p>${chips(r.colors)}
     <p>시선: ${esc(r.focus)}<br>후킹: <b>${esc(r.hook)}</b><br>제목과의 역할: ${esc(r.titleFit)}</p>
     <p class="muted">강점</p><ul>${list(r.strengths)}</ul><p class="muted">약점</p><ul>${list(r.weaknesses)}</ul>`,
+  reason: (r) => `
+    <p><b class="${{ 잘됨: 'Good', 평범: 'Normal', 부진: 'Worst' }[r.verdict] || ''}">${esc(r.verdict)}</b> · ${esc(r.summary)}</p>
+    <ul>${(r.factors || []).map((f) => `<li><b>${esc(f.factor)}</b>: ${esc(f.detail)}</li>`).join('')}</ul>
+    <p class="muted">최근 영상과 비교</p><p>${esc(r.compare)}</p>
+    <p class="muted">내 영상에 적용할 점</p><ul>${list(r.lessons)}</ul>`,
 };
-const AI_TITLE = { audience: '시청층 추정', thumbnail: '썸네일 분석' };
+const AI_TITLE = { audience: '시청층 추정', thumbnail: '썸네일 분석', reason: '잘된 이유' };
+
+// 결과를 localStorage에 저장하고, 있으면 다시 부르지 않는다
+async function callAI(task, data, key, force) {
+  const cached = store.get(key, null);
+  if (cached && !force) return cached;
+  const res = await fetch('/ai', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ task, data }) });
+  const body = await res.json().catch(() => ({ error: 'server.py로 연 화면에서만 AI를 쓸 수 있어요' }));
+  if (!res.ok) throw new Error(body.error);
+  const saved = { at: Date.now(), result: body.result };
+  store.set(key, saved);
+  return saved;
+}
 
 function showAI(task, saved) {
   $('ai-' + task).innerHTML = `<h4>${AI_TITLE[task]} <button class="x" data-ai="${task}" data-redo="1" title="다시 분석">↻</button>
@@ -354,26 +380,121 @@ function showAI(task, saved) {
 
 async function runAI(task, force) {
   const ctx = detailCtx, key = `ai:${task}:${ctx.id}`;
-  const cached = store.get(key, null);
-  if (cached && !force) return showAI(task, cached);
-  const box = $('ai-' + task);
-  box.innerHTML = `<p class="muted">${AI_TITLE[task]} 중… (보통 10~40초)</p>`;
+  if (!store.get(key, null) || force) $('ai-' + task).innerHTML = `<p class="muted">${AI_TITLE[task]} 중… (보통 10~40초)</p>`;
   try {
-    const res = await fetch('/ai', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ task, data: task === 'thumbnail' ? { title: ctx.data.title, thumbUrl: ctx.thumb } : ctx.data }) });
-    const body = await res.json().catch(() => ({ error: 'server.py로 연 화면에서만 AI를 쓸 수 있어요' }));
-    if (!res.ok) throw new Error(body.error);
-    const saved = { at: Date.now(), result: body.result };
-    store.set(key, saved);
+    const saved = await callAI(task, ctx.payload[task], key, force);
     if (detailCtx?.id === ctx.id) showAI(task, saved);   // 그사이 다른 영상을 열었으면 저장만
   } catch (err) {
-    if (detailCtx?.id === ctx.id) box.innerHTML = `<p>AI 오류: ${esc(err.message)}</p>`;
+    if (detailCtx?.id === ctx.id) $('ai-' + task).innerHTML = `<p>AI 오류: ${esc(err.message)}</p>`;
   }
 }
 
+// 검색 결과·선택 영상 단위 AI 리포트 (패널에 띄움)
+const REPORT = {
+  patterns: { title: '결과 패턴 요약', view: (r) => `
+    <p><b>${esc(r.summary)}</b></p>
+    <h4>잘되는 제목 공식</h4><ul>${(r.titleFormulas || []).map((f) => `<li><b>${esc(f.pattern)}</b> — 예: ${esc(f.example)}<br><span class="muted">${esc(f.why)}</span></li>`).join('')}</ul>
+    <h4>잘되는 주제</h4>${chips(r.topics)}
+    <h4>썸네일 경향</h4><ul>${list(r.thumbnailTrends)}</ul>
+    <h4>형식</h4><ul>${list(r.formats)}</ul>
+    <h4>빈틈 (기회)</h4><ul>${list(r.gaps)}</ul>` },
+  keywords: { title: '키워드 확장', view: (r) => `
+    <p class="muted">누르면 바로 검색해요 (저장된 결과가 없으면 API 사용)</p>
+    <ul>${(r.keywords || []).map((k) => `<li><button class="x" data-kw="${esc(k.keyword)}"><b>${esc(k.keyword)}</b></button>
+      <span class="muted">${esc(k.type)}</span> — ${esc(k.reason)}</li>`).join('')}</ul>` },
+  ideas: { title: '댓글로 아이디어', view: (r) => `
+    <p><b>${esc(r.summary)}</b></p>
+    <h4>시청자 니즈</h4><ul>${(r.needs || []).map((n) => `<li><b>${esc(n.need)}</b><br><span class="muted">“${esc(n.evidence)}”</span></li>`).join('')}</ul>
+    <h4>영상 아이디어</h4><ul>${(r.ideas || []).map((i) => `<li><b>${esc(i.title)}</b><br>${esc(i.angle)}<br><span class="muted">${esc(i.why)}</span></li>`).join('')}</ul>` },
+  plan: { title: '내 영상 기획', view: (r) => `
+    <p><b>${esc(r.concept)}</b></p>
+    <h4>제목 후보</h4><ul>${list(r.titles)}</ul>
+    <h4>썸네일 문구</h4>${chips(r.thumbnailTexts)}<p>${esc(r.thumbnailIdea)}</p>
+    <h4>첫 15초</h4><p>${esc(r.hook)}</p>
+    <h4>구성</h4><ol>${(r.outline || []).map((o) => `<li><b>${esc(o.section)}</b>: ${esc(o.content)}</li>`).join('')}</ol>
+    <h4>주의·차별화</h4><ul>${list(r.notes)}</ul>` },
+};
+
+const hash = (s) => [...s].reduce((h, c) => (h * 31 + c.charCodeAt(0)) | 0, 7).toString(36);
+const byViews = (a) => [...a].sort((x, y) => y.views - x.views);
+const brief = (r) => ({ title: r.title, channel: r.channelTitle, views: r.views, subscribers: r.subs,
+  contribution: r.contribution, performance: r.performance, durationSec: r.durationSec, published: (r.publishedAt || '').slice(0, 10) });
+
+// 선택한 영상, 없으면 지금 보이는 목록에서 조회수 상위 n개
+function pickRows(n) {
+  const ids = new Set(checkedIds());
+  const pool = showingCollected ? collected : rows;
+  const picked = pool.filter((r) => ids.has(r.id));
+  return { list: (picked.length ? picked : byViews(visible())).slice(0, n), selected: picked.length > 0 };
+}
+
+async function reportData(task) {
+  const keyword = showingCollected ? '(수집한 영상)' : $('q').value.trim();
+  if (task === 'patterns' || task === 'keywords') {
+    const top = byViews(visible()).slice(0, 40);
+    if (!top.length) throw new Error('먼저 검색하세요');
+    const data = task === 'patterns'
+      ? { keyword, videos: top.map(brief), thumbOrder: top.slice(0, 8).map((r) => r.title),
+          thumbUrls: top.slice(0, 8).map((r) => r.thumb).filter(Boolean) }
+      : { keyword, titles: top.map((r) => r.title), tags: [...new Set(top.flatMap((r) => r.tags || []))].slice(0, 80) };
+    return { data, ids: top.map((r) => r.id), note: `조회수 상위 ${top.length}개 기준` };
+  }
+  const { list: picked, selected } = pickRows(10);
+  if (!picked.length) throw new Error('먼저 검색하거나 영상을 선택하세요');
+  const note = `${selected ? '선택한' : '조회수 상위'} ${picked.length}개 기준`;
+  if (task === 'ideas') {
+    const videos = [];
+    for (const r of picked) {
+      let comments = [];
+      try {
+        comments = (await yt('commentThreads', { part: 'snippet', videoId: r.id, order: 'relevance', maxResults: 20, textFormat: 'plainText' }))
+          .items.map((c) => c.snippet.topLevelComment.snippet.textDisplay.slice(0, 300));
+      } catch { /* 댓글 막힌 영상은 건너뜀 */ }
+      videos.push({ title: r.title, comments });
+    }
+    setStatus(`댓글 ${picked.length}유닛 · 오늘 약 ${addQuota(picked.length).toLocaleString()}/10,000`);
+    return { data: { keyword, videos }, ids: picked.map((r) => r.id), note };
+  }
+  // plan
+  const myChannel = prompt('내 채널은 어떤 채널인가요? (주제·대상·톤)', store.get('myChannel', ''));
+  if (!myChannel) throw new Error('채널 설명이 있어야 기획할 수 있어요');
+  store.set('myChannel', myChannel);
+  return { data: { myChannel, keyword, references: picked.map((r) => ({ ...brief(r), tags: r.tags || [] })),
+                   thumbUrls: picked.slice(0, 4).map((r) => r.thumb).filter(Boolean) },
+           ids: picked.map((r) => r.id).concat(myChannel), note };
+}
+
+async function openReport(task, force = false) {
+  const P = $('panel');
+  detailCtx = null;
+  document.body.classList.add('detail');
+  const head = `<button class="close" onclick="closeDetail()">닫기 ✕</button><h2>AI · ${REPORT[task].title}</h2>`;
+  P.innerHTML = head + '<p class="muted">데이터 모으는 중…</p>';
+  try {
+    const { data, ids, note } = await reportData(task);
+    const key = `ai:${task}:${hash(ids.join(','))}`;
+    if (!store.get(key, null) || force) P.innerHTML = head + `<p class="muted">${note} · 분석 중… (보통 20~60초)</p>`;
+    const saved = await callAI(task, data, key, force);
+    P.innerHTML = head + `<p class="muted">${note} · ${new Date(saved.at).toLocaleString('ko-KR')}
+      <button class="x" data-report="${task}" title="다시 분석">↻ 다시 분석</button></p>
+      <div class="ai">${REPORT[task].view(saved.result)}</div>`;
+  } catch (err) {
+    P.innerHTML = head + `<p>AI 오류: ${esc(err.message)}</p>`;
+  }
+}
+
+$('aiTool').onchange = () => {
+  const task = $('aiTool').value;
+  $('aiTool').value = '';
+  if (task) openReport(task);
+};
+
 $('panel').addEventListener('click', (e) => {
-  const b = e.target.closest('[data-ai]');
-  if (b && detailCtx) runAI(b.dataset.ai, !!b.dataset.redo);
+  const b = e.target.closest('[data-ai], [data-report], [data-kw]');
+  if (!b) return;
+  if (b.dataset.kw) { $('q').value = b.dataset.kw; closeDetail(); return search(null); }
+  if (b.dataset.report) return openReport(b.dataset.report, true);
+  if (detailCtx) runAI(b.dataset.ai, !!b.dataset.redo);
 });
 
 function closeDetail() { document.body.classList.remove('detail'); }
@@ -393,11 +514,14 @@ async function openDetail(id) {
     let units = 2, recent = null, comments = [], commentNote = '';
 
     const uploads = ch?.contentDetails?.relatedPlaylists?.uploads;
+    let recentList = [];
     if (uploads) {
       const ids = (await yt('playlistItems', { part: 'contentDetails', playlistId: uploads, maxResults: 50 }))
         .items.map((it) => it.contentDetails.videoId);
-      const stats = (await yt('videos', { part: 'statistics', id: ids.join(',') })).items;
-      recent = compareToRecent(row.views, stats.filter((s) => s.id !== id).map((s) => +s.statistics.viewCount));
+      recentList = (await yt('videos', { part: 'snippet,statistics', id: ids.join(',') })).items
+        .filter((s) => s.id !== id)
+        .map((s) => ({ title: s.snippet.title, views: +s.statistics.viewCount, publishedAt: s.snippet.publishedAt.slice(0, 10) }));
+      recent = compareToRecent(row.views, recentList.map((s) => s.views));
       units += 2;
     }
     try {
@@ -420,9 +544,8 @@ async function openDetail(id) {
       <p><a href="https://youtu.be/${esc(id)}" target="_blank" rel="noopener">▶ 유튜브에서 보기</a></p>
 
       <h3>AI 분석 <span class="muted">Claude · 추정치</span></h3>
-      <button data-ai="audience">시청층 추정</button> <button data-ai="thumbnail">썸네일 분석</button>
-      <div id="ai-audience" class="ai"></div>
-      <div id="ai-thumbnail" class="ai"></div>
+      ${Object.entries(AI_TITLE).map(([k, t]) => `<button data-ai="${k}">${t}</button>`).join(' ')}
+      ${Object.keys(AI_TITLE).map((k) => `<div id="ai-${k}" class="ai"></div>`).join('')}
 
       <h3>반응</h3>
       <div class="grid">
@@ -453,10 +576,16 @@ async function openDetail(id) {
       <h3>볼 수 없는 정보</h3>
       <p class="muted">시청지속시간, 시청자 연령·성별·지역, 노출 클릭률, 유입 경로는 YouTube Analytics 데이터라 채널 주인만 볼 수 있어요.</p>`;
     P.scrollTop = 0;
-    detailCtx = { id, thumb, data: {
-      title: row.title, channel: row.channelTitle, description: (v.snippet.description || '').slice(0, 2000),
-      tags: v.snippet.tags || [], views: row.views, subscribers: row.subs,
-      comments: comments.map((c) => `${c.textDisplay.slice(0, 500)} (좋아요 ${c.likeCount})`) } };
+    detailCtx = { id, payload: {
+      audience: { title: row.title, channel: row.channelTitle, description: (v.snippet.description || '').slice(0, 2000),
+        tags: v.snippet.tags || [], views: row.views, subscribers: row.subs,
+        comments: comments.map((c) => `${c.textDisplay.slice(0, 500)} (좋아요 ${c.likeCount})`) },
+      thumbnail: { title: row.title, thumbUrl: thumb },
+      reason: { video: { title: row.title, views: row.views, publishedAt: row.publishedAt.slice(0, 10),
+        durationSec: row.durationSec, tags: (v.snippet.tags || []).slice(0, 15) },
+        channel: { title: row.channelTitle, subscribers: row.subs, recentMedianViews: recent && Math.round(recent.median) },
+        recentVideos: recentList },
+    } };
     for (const task of Object.keys(AI_VIEW)) {
       const cached = store.get(`ai:${task}:${id}`, null);
       if (cached) showAI(task, cached);

@@ -35,6 +35,7 @@ function toRow(v, ch) {
     thumb: v.snippet.thumbnails.medium?.url || v.snippet.thumbnails.default?.url,
     channelId: v.snippet.channelId,
     channelTitle: v.snippet.channelTitle,
+    tags: (v.snippet.tags || []).slice(0, 15),
     publishedAt: v.snippet.publishedAt,
     durationSec: durationSec(v.contentDetails.duration),
     caption: v.contentDetails.caption === 'true',

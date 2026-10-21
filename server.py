@@ -68,7 +68,107 @@ TASKS = {
             'required': ['text', 'people', 'colors', 'focus', 'hook', 'titleFit', 'strengths', 'weaknesses'],
         },
     },
+    'reason': {
+        'prompt': (
+            '이 영상이 같은 채널의 최근 영상들보다 잘됐는지(또는 안 됐는지)와 그 이유를 분석해라. '
+            '주제, 제목, 게시 시점, 길이를 최근 영상들과 비교한다. 조회수 외 지표는 없으니 추정임을 감안한다.\n'
+            '<data>\n{data}\n</data>'
+        ),
+        'schema': {
+            'type': 'object',
+            'properties': {
+                'verdict': {'type': 'string', 'enum': ['잘됨', '평범', '부진']},
+                'summary': {'type': 'string', 'description': '한두 문장 결론'},
+                'factors': {'type': 'array', 'items': {'type': 'object', 'properties': {
+                    'factor': {'type': 'string'}, 'detail': {'type': 'string'}},
+                    'required': ['factor', 'detail']}, 'description': '성과를 가른 요인 3~5개'},
+                'compare': {'type': 'string', 'description': '잘된/안된 최근 영상과 비교해 다른 점'},
+                'lessons': {'type': 'array', 'items': {'type': 'string'}, 'description': '내 영상에 적용할 점'},
+            },
+            'required': ['verdict', 'summary', 'factors', 'compare', 'lessons'],
+        },
+    },
+    'patterns': {
+        'prompt': (
+            '키워드 검색 결과 상위 영상들이다. 조회수·등급이 높은 영상 위주로 잘되는 패턴을 찾아라. '
+            '이미지는 상위 영상 썸네일이며 순서는 데이터의 thumbOrder와 같다.\n'
+            '<data>\n{data}\n</data>'
+        ),
+        'schema': {
+            'type': 'object',
+            'properties': {
+                'summary': {'type': 'string', 'description': '이 키워드 시장을 두세 문장으로'},
+                'titleFormulas': {'type': 'array', 'items': {'type': 'object', 'properties': {
+                    'pattern': {'type': 'string'}, 'example': {'type': 'string'}, 'why': {'type': 'string'}},
+                    'required': ['pattern', 'example', 'why']}, 'description': '잘되는 제목 공식 3~5개'},
+                'topics': {'type': 'array', 'items': {'type': 'string'}, 'description': '반복해서 잘되는 주제'},
+                'thumbnailTrends': {'type': 'array', 'items': {'type': 'string'}},
+                'formats': {'type': 'array', 'items': {'type': 'string'}, 'description': '길이·형식(쇼츠/롱폼, 채널 규모) 경향'},
+                'gaps': {'type': 'array', 'items': {'type': 'string'}, 'description': '수요는 보이는데 잘 만든 영상이 적은 빈틈'},
+            },
+            'required': ['summary', 'titleFormulas', 'topics', 'thumbnailTrends', 'formats', 'gaps'],
+        },
+    },
+    'keywords': {
+        'prompt': (
+            '검색어와 상위 영상의 제목·태그를 보고, 다음에 검색해 볼 만한 한국어 유튜브 키워드 15개를 제안해라. '
+            '너무 넓은 단어보다 실제로 사람들이 검색할 구체적 표현을 섞는다.\n'
+            '<data>\n{data}\n</data>'
+        ),
+        'schema': {
+            'type': 'object',
+            'properties': {
+                'keywords': {'type': 'array', 'items': {'type': 'object', 'properties': {
+                    'keyword': {'type': 'string'},
+                    'type': {'type': 'string', 'enum': ['세부', '연관', '확장', '롱테일']},
+                    'reason': {'type': 'string'}},
+                    'required': ['keyword', 'type', 'reason']}},
+            },
+            'required': ['keywords'],
+        },
+    },
+    'ideas': {
+        'prompt': (
+            '여러 영상의 댓글이다. 시청자가 묻는 것, 불만, 더 원하는 것을 모아 새 영상 아이디어로 바꿔라.\n'
+            '<data>\n{data}\n</data>'
+        ),
+        'schema': {
+            'type': 'object',
+            'properties': {
+                'summary': {'type': 'string'},
+                'needs': {'type': 'array', 'items': {'type': 'object', 'properties': {
+                    'need': {'type': 'string'}, 'evidence': {'type': 'string', 'description': '근거 댓글 일부 인용'}},
+                    'required': ['need', 'evidence']}, 'description': '반복되는 시청자 니즈 3~6개'},
+                'ideas': {'type': 'array', 'items': {'type': 'object', 'properties': {
+                    'title': {'type': 'string'}, 'angle': {'type': 'string'}, 'why': {'type': 'string'}},
+                    'required': ['title', 'angle', 'why']}, 'description': '영상 아이디어 5~8개'},
+            },
+            'required': ['summary', 'needs', 'ideas'],
+        },
+    },
+    'plan': {
+        'prompt': (
+            '참고 영상들을 바탕으로 내 채널에 올릴 새 영상을 기획해라. 참고 영상을 베끼지 말고 잘된 요소만 가져온다.\n'
+            '<data>\n{data}\n</data>'
+        ),
+        'schema': {
+            'type': 'object',
+            'properties': {
+                'concept': {'type': 'string', 'description': '영상 한 줄 컨셉'},
+                'titles': {'type': 'array', 'items': {'type': 'string'}, 'description': '제목 후보 5개'},
+                'thumbnailTexts': {'type': 'array', 'items': {'type': 'string'}, 'description': '썸네일 문구 후보 5개(짧게)'},
+                'thumbnailIdea': {'type': 'string', 'description': '썸네일 구도·인물·색'},
+                'hook': {'type': 'string', 'description': '첫 15초 대사'},
+                'outline': {'type': 'array', 'items': {'type': 'object', 'properties': {
+                    'section': {'type': 'string'}, 'content': {'type': 'string'}},
+                    'required': ['section', 'content']}},
+                'notes': {'type': 'array', 'items': {'type': 'string'}, 'description': '주의점·차별화 포인트'},
+            },
+            'required': ['concept', 'titles', 'thumbnailTexts', 'thumbnailIdea', 'hook', 'outline', 'notes'],
+        },
+    },
 }
+MAX_IMAGES = 8
 
 
 def allowed_origin(origin):
@@ -82,14 +182,18 @@ def safe_thumb_url(url):
 
 def build_content(task, data):
     """claude에 보낼 user 메시지 content 블록 목록"""
-    text = {k: v for k, v in data.items() if k != 'thumbUrl'}
-    blocks = [{'type': 'text', 'text': TASKS[task]['prompt'].format(data=json.dumps(text, ensure_ascii=False, indent=1))}]
-    if task == 'thumbnail':
-        if not safe_thumb_url(data.get('thumbUrl')):
-            raise ValueError('썸네일 주소가 유튜브 이미지가 아니에요')
-        with urllib.request.urlopen(data['thumbUrl'], timeout=15) as r:
+    urls = ([data['thumbUrl']] if data.get('thumbUrl') else []) + list(data.get('thumbUrls') or [])
+    if task == 'thumbnail' and not urls:
+        raise ValueError('썸네일 주소가 없어요')
+    if not all(safe_thumb_url(u) for u in urls):
+        raise ValueError('썸네일 주소가 유튜브 이미지가 아니에요')
+    text = {k: v for k, v in data.items() if k not in ('thumbUrl', 'thumbUrls')}
+    blocks = []
+    for u in urls[:MAX_IMAGES]:
+        with urllib.request.urlopen(u, timeout=15) as r:
             img = base64.b64encode(r.read(5_000_000)).decode()
-        blocks.insert(0, {'type': 'image', 'source': {'type': 'base64', 'media_type': 'image/jpeg', 'data': img}})
+        blocks.append({'type': 'image', 'source': {'type': 'base64', 'media_type': 'image/jpeg', 'data': img}})
+    blocks.append({'type': 'text', 'text': TASKS[task]['prompt'].format(data=json.dumps(text, ensure_ascii=False, indent=1))})
     return blocks
 
 

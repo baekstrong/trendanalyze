@@ -21,6 +21,18 @@ try:
 except ValueError:
     pass
 
+try:
+    server.build_content('thumbnail', {})
+    raise AssertionError('막혀야 함')
+except ValueError:
+    pass
+
+try:
+    server.build_content('patterns', {'thumbUrls': ['https://i.ytimg.com/a.jpg', 'https://evil.example/b.jpg']})
+    raise AssertionError('하나라도 외부 주소면 막혀야 함')
+except ValueError:
+    pass
+
 for t in server.TASKS.values():
     json.dumps(t['schema'])
 print('ok')
