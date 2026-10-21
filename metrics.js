@@ -5,6 +5,13 @@ const GRADES = {
   contribution: [[10, 'Great'], [2, 'Good'], [0.5, 'Normal'], [0.2, 'Bad']],
   // 성과도: 영상 조회수 ÷ 구독자 수 (구독자 기반 노출 밖으로 얼마나 퍼졌나)
   performance: [[50, 'Great'], [1, 'Good'], [0.3, 'Normal'], [0.1, 'Bad']],
+  // 채널 지표 (뷰트랩 채널 찾기 화면 40여 개와 대조해 맞춤)
+  // 조회수대비 구독전환: 구독자 ÷ 누적 조회수
+  subRate: [[0.02, 'Great'], [0.005, 'Good'], [0.001, 'Normal'], [0.0005, 'Bad']],
+  // 일평균 구독전환: 구독자 ÷ 개설 후 일수
+  dailySubs: [[300, 'Great'], [80, 'Good'], [40, 'Normal'], [10, 'Bad']],
+  // 영상성과: 최근 영상 조회수 중앙값 ÷ 구독자
+  videoPerf: [[1, 'Great'], [0.3, 'Good'], [0.1, 'Normal'], [0.03, 'Bad']],
 };
 
 function grade(kind, ratio) {
@@ -51,13 +58,51 @@ function toRow(v, ch) {
   };
 }
 
-// 채널 최근 영상들 사이에서 이 영상 위치 (평생 평균보다 지금 채널 체급에 가깝다)
-function compareToRecent(views, recentViews) {
-  const list = recentViews.filter(Number.isFinite).sort((a, b) => b - a);
-  if (!list.length) return null;
+function median(values) {
+  const list = values.filter(Number.isFinite).sort((a, b) => a - b);
+  if (!list.length) return NaN;
   const mid = list.length >> 1;
-  const median = list.length % 2 ? list[mid] : (list[mid - 1] + list[mid]) / 2;
-  return { median, ratio: views / median, rank: list.filter((v) => v > views).length + 1, total: list.length };
+  return list.length % 2 ? list[mid] : (list[mid - 1] + list[mid]) / 2;
 }
 
-if (typeof module !== 'undefined') module.exports = { grade, durationSec, toRow, compareToRecent, GRADES };
+// 채널 최근 영상들 사이에서 이 영상 위치 (평생 평균보다 지금 채널 체급에 가깝다)
+function compareToRecent(views, recentViews) {
+  const list = recentViews.filter(Number.isFinite);
+  if (!list.length) return null;
+  const m = median(list);
+  return { median: m, ratio: views / m, rank: list.filter((v) => v > views).length + 1, total: list.length };
+}
+
+// YouTube API의 channel 응답 (+ 최근 영상 조회수) → 채널 표 한 줄
+function channelRow(ch, recentViews = [], now = Date.now()) {
+  const s = ch.statistics;
+  const subs = s.hiddenSubscriberCount ? NaN : +s.subscriberCount;
+  const views = +s.viewCount || 0;
+  const days = Math.max(1, (now - new Date(ch.snippet.publishedAt)) / 864e5);
+  const recentMedian = median(recentViews);
+  const subRate = views ? subs / views : NaN;
+  const dailySubs = subs / days;
+  const videoPerfRate = recentMedian / subs;
+  return {
+    id: ch.id,
+    title: ch.snippet.title,
+    handle: ch.snippet.customUrl || '',
+    thumb: ch.snippet.thumbnails?.default?.url,
+    publishedAt: ch.snippet.publishedAt,
+    country: ch.snippet.country || '',
+    uploads: ch.contentDetails?.relatedPlaylists?.uploads,
+    subs,
+    views,
+    videoCount: +s.videoCount || 0,
+    days: Math.floor(days),
+    recentMedian,
+    subRate,
+    dailySubs,
+    videoPerfRate,
+    subRateGrade: grade('subRate', subRate),
+    dailySubsGrade: grade('dailySubs', dailySubs),
+    videoPerf: grade('videoPerf', videoPerfRate),
+  };
+}
+
+if (typeof module !== 'undefined') module.exports = { grade, durationSec, toRow, compareToRecent, median, channelRow, GRADES };

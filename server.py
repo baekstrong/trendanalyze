@@ -15,7 +15,7 @@ from urllib.parse import urlparse
 PORT = 5178
 MODEL = os.environ.get('TREND_AI_MODEL', 'claude-opus-5-5')
 ROOT = Path(__file__).resolve().parent
-STATIC = {'/': 'index.html', '/index.html': 'index.html', '/metrics.js': 'metrics.js'}  # .git 등은 절대 내보내지 않음
+STATIC = {'/': 'index.html', '/index.html': 'index.html', '/metrics.js': 'metrics.js', '/channels.js': 'channels.js'}  # .git 등은 절대 내보내지 않음
 ALLOWED_ORIGINS = {f'http://localhost:{PORT}', f'http://127.0.0.1:{PORT}'}
 THUMB_HOSTS = {'i.ytimg.com', 'i9.ytimg.com'}
 WORKDIR = tempfile.mkdtemp(prefix='trend-ai-')  # 빈 폴더에서 실행해 프로젝트 CLAUDE.md 등을 안 읽게

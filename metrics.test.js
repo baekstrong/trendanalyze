@@ -1,6 +1,6 @@
 // node metrics.test.js
 const assert = require('assert');
-const { grade, durationSec, toRow, compareToRecent } = require('./metrics.js');
+const { grade, durationSec, toRow, compareToRecent, median, channelRow } = require('./metrics.js');
 
 assert.equal(durationSec('PT4M43S'), 283);
 assert.equal(durationSec('PT1H2M'), 3720);
@@ -32,4 +32,21 @@ assert.equal(cmp.median, 400);
 assert.equal(cmp.rank, 2);
 assert.equal(cmp.ratio, 1.25);
 assert.equal(compareToRecent(1, []), null);
+// 채널: 뷰트랩 채널 찾기 화면에서 본 값 (2026-10-21 기준)
+const now = Date.parse('2026-10-21T00:00:00Z');
+const ch = (subs, views, publishedAt, videoCount = 100) => ({ id: 'c', snippet: { title: 'C', publishedAt },
+  statistics: { subscriberCount: String(subs), viewCount: String(views), videoCount: String(videoCount) } });
+const yaji = channelRow(ch(22900, 4185000, '2023-08-19T00:00:00Z'), [], now);   // 뷰트랩: Good / Bad
+assert.equal(yaji.subRateGrade, 'Good');
+assert.equal(yaji.dailySubsGrade, 'Bad');
+const ironbin = channelRow(ch(616000, 540000000, '2022-05-20T00:00:00Z'), [], now); // 뷰트랩: Normal / Great
+assert.equal(ironbin.subRateGrade, 'Normal');
+assert.equal(ironbin.dailySubsGrade, 'Great');
+const jaecomics = channelRow(ch(1040, 2189000, '2020-07-27T00:00:00Z'), [], now); // 뷰트랩: Worst / Worst
+assert.equal(jaecomics.subRateGrade, 'Worst');
+assert.equal(jaecomics.dailySubsGrade, 'Worst');
+assert.equal(yaji.videoPerf, '-');                                                  // 최근 영상 없으면 계산 안 함
+assert.equal(channelRow(ch(1000, 0, '2020-01-01T00:00:00Z'), [500, 300, 100], now).videoPerf, 'Good');
+assert.equal(channelRow(ch(1000, 0, '2020-01-01T00:00:00Z'), [], now).subRateGrade, '-');
+assert.equal(median([3, 1, 2]), 2);
 console.log('ok');
