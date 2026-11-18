@@ -1,6 +1,7 @@
 """화면 파일 제공 + Claude 분석 중계 서버. python3 server.py → http://localhost:5178
 
-AI는 이 맥에 로그인된 Claude Code(`claude -p`)를 거쳐 구독으로 쓴다. 토큰을 직접 다루지 않는다.
+AI는 이 컴퓨터에 로그인된 Claude Code(`claude -p`) 또는 Codex(`codex exec`)를 거쳐 각자의 구독으로 쓴다.
+API 키·토큰은 직접 다루지 않는다. 어느 쪽을 쓸지는 화면 오른쪽 위에서 고른다.
 """
 import base64
 import json
@@ -16,6 +17,8 @@ from urllib.parse import urlparse
 
 PORT = 5178
 MODEL = os.environ.get('TREND_AI_MODEL', 'claude-opus-5-5')
+CODEX_MODEL = os.environ.get('TREND_CODEX_MODEL')  # 비우면 Codex 설정(~/.codex/config.toml)의 기본 모델
+ENGINES = {'claude': 'Claude Code', 'codex': 'Codex'}
 ROOT = Path(__file__).resolve().parent
 STATIC = {'/': 'index.html', '/index.html': 'index.html', '/metrics.js': 'metrics.js', '/channels.js': 'channels.js'}  # .git 등은 절대 내보내지 않음
 ALLOWED_ORIGINS = {f'http://localhost:{PORT}', f'http://127.0.0.1:{PORT}'}
@@ -202,21 +205,45 @@ def safe_thumb_url(url):
     return u.scheme == 'https' and u.hostname in THUMB_HOSTS
 
 
-def build_content(task, data):
-    """claude에 보낼 user 메시지 content 블록 목록"""
+def thumb_urls(task, data):
+    """분석에 붙일 썸네일 주소 (유튜브 이미지만 허용)"""
     urls = ([data['thumbUrl']] if data.get('thumbUrl') else []) + list(data.get('thumbUrls') or [])
     if task == 'thumbnail' and not urls:
         raise ValueError('썸네일 주소가 없어요')
     if not all(safe_thumb_url(u) for u in urls):
         raise ValueError('썸네일 주소가 유튜브 이미지가 아니에요')
+    return urls[:MAX_IMAGES]
+
+
+def fetch_image(url):
+    with urllib.request.urlopen(url, timeout=15) as r:
+        return r.read(5_000_000)
+
+
+def prompt_text(task, data):
     text = {k: v for k, v in data.items() if k not in ('thumbUrl', 'thumbUrls')}
-    blocks = []
-    for u in urls[:MAX_IMAGES]:
-        with urllib.request.urlopen(u, timeout=15) as r:
-            img = base64.b64encode(r.read(5_000_000)).decode()
-        blocks.append({'type': 'image', 'source': {'type': 'base64', 'media_type': 'image/jpeg', 'data': img}})
-    blocks.append({'type': 'text', 'text': TASKS[task]['prompt'].format(data=json.dumps(text, ensure_ascii=False, indent=1))})
+    return TASKS[task]['prompt'].format(data=json.dumps(text, ensure_ascii=False, indent=1))
+
+
+def build_content(task, data):
+    """claude에 보낼 user 메시지 content 블록 목록"""
+    blocks = [{'type': 'image', 'source': {'type': 'base64', 'media_type': 'image/jpeg',
+                                           'data': base64.b64encode(fetch_image(u)).decode()}}
+              for u in thumb_urls(task, data)]
+    blocks.append({'type': 'text', 'text': prompt_text(task, data)})
     return blocks
+
+
+def strict_schema(node):
+    """Codex(OpenAI) 구조화 출력은 모든 object에 additionalProperties: false가 있어야 한다"""
+    if isinstance(node, dict):
+        node = {k: strict_schema(v) for k, v in node.items()}
+        if node.get('type') == 'object':
+            node.setdefault('additionalProperties', False)
+        return node
+    if isinstance(node, list):
+        return [strict_schema(v) for v in node]
+    return node
 
 
 VIDEO_ID = re.compile(r'^[\w-]{11}$')
@@ -276,9 +303,10 @@ def enrich(task, data):
 
 
 def ask_claude(task, data):
-    data = enrich(task, data)
+    if not shutil.which('claude'):
+        raise RuntimeError('Claude Code가 설치돼 있지 않아요. README의 Claude Code 설치를 따라 해 주세요')
     msg = {'type': 'user', 'message': {'role': 'user', 'content': build_content(task, data)}}
-    cmd = ['claude', '-p', '--model', MODEL, '--tools', '', '--setting-sources', '', '--strict-mcp-config',
+    cmd = [shutil.which('claude'), '-p', '--model', MODEL, '--tools', '', '--setting-sources', '', '--strict-mcp-config',
            '--no-session-persistence', '--system-prompt', SYSTEM, '--json-schema', json.dumps(TASKS[task]['schema']),
            '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose']
     p = subprocess.run(cmd, input=json.dumps(msg, ensure_ascii=False), capture_output=True, text=True,
@@ -287,13 +315,54 @@ def ask_claude(task, data):
         d = json.loads(line)
         if d.get('type') == 'result':
             if d.get('is_error'):
-                raise RuntimeError(d.get('result') or 'Claude 오류')
+                msg = d.get('result') or 'Claude 오류'
+                if 'authenticate' in msg.lower() or 'log in' in msg.lower() or 'login' in msg.lower():
+                    msg = 'Claude Code 로그인이 풀렸어요. 터미널에서 claude 를 실행해 다시 로그인해 주세요'
+                raise RuntimeError(msg)
             out = d.get('structured_output')
-            out = out if out is not None else json.loads(d['result'])
-            if task == 'reason':
-                out['sources'] = {'transcript': bool(data.get('transcript')) and not data['transcript'].startswith('(')}
-            return out
+            return out if out is not None else json.loads(d['result'])
     raise RuntimeError((p.stderr or 'Claude 응답 없음').strip()[-500:])
+
+
+def codex_cmd(schema_file, out_file, images):
+    cmd = [shutil.which('codex') or 'codex', 'exec', '--skip-git-repo-check', '--ephemeral', '--sandbox', 'read-only', '-C', WORKDIR,
+           '--output-schema', schema_file, '-o', out_file, '--color', 'never']
+    if CODEX_MODEL:
+        cmd += ['-m', CODEX_MODEL]
+    for f in images:
+        cmd += ['-i', f]
+    return cmd + ['-']  # 프롬프트는 stdin으로
+
+
+def ask_codex(task, data):
+    if not shutil.which('codex'):
+        raise RuntimeError('Codex가 설치돼 있지 않아요. README의 Codex 설치를 따라 해 주세요')
+    with tempfile.TemporaryDirectory() as d:
+        images = []
+        for i, u in enumerate(thumb_urls(task, data)):
+            f = Path(d, f'thumb{i}.jpg')
+            f.write_bytes(fetch_image(u))
+            images.append(str(f))
+        schema_file, out_file = str(Path(d, 'schema.json')), str(Path(d, 'out.json'))
+        Path(schema_file).write_text(json.dumps(strict_schema(TASKS[task]['schema']), ensure_ascii=False))
+        prompt = f'{SYSTEM}\n파일을 읽거나 명령을 실행하지 말고, 아래 내용과 첨부 이미지만 보고 답한다.\n\n{prompt_text(task, data)}'
+        try:
+            p = subprocess.run(codex_cmd(schema_file, out_file, images), input=prompt, capture_output=True,
+                               text=True, timeout=600, cwd=WORKDIR)
+        except subprocess.TimeoutExpired:
+            raise RuntimeError('Codex 응답이 10분 안에 오지 않았어요') from None
+        out = Path(out_file)
+        if p.returncode != 0 or not out.exists() or not out.read_text().strip():
+            raise RuntimeError((p.stderr or 'Codex 응답 없음').strip()[-500:])
+        return json.loads(out.read_text())
+
+
+def analyze(task, data, engine='claude'):
+    data = enrich(task, data)
+    out = ask_codex(task, data) if engine == 'codex' else ask_claude(task, data)
+    if task == 'reason':
+        out['sources'] = {'transcript': bool(data.get('transcript')) and not data['transcript'].startswith('(')}
+    return out
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -322,11 +391,16 @@ class Handler(BaseHTTPRequestHandler):
             req = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0)) or 0))
             if req.get('task') not in TASKS:
                 return self.send(400, {'error': '알 수 없는 분석'})
-            self.send(200, {'result': ask_claude(req['task'], req.get('data') or {}), 'model': MODEL})
+            engine = req.get('engine') or 'claude'
+            if engine not in ENGINES:
+                return self.send(400, {'error': '알 수 없는 AI'})
+            result = analyze(req['task'], req.get('data') or {}, engine)
+            model = (CODEX_MODEL or 'Codex 기본 모델') if engine == 'codex' else MODEL
+            self.send(200, {'result': result, 'engine': engine, 'model': model})
         except Exception as e:  # noqa: BLE001 - 화면에 그대로 보여줄 오류
             self.send(500, {'error': str(e)})
 
 
 if __name__ == '__main__':
-    print(f'http://localhost:{PORT}  (AI 모델: {MODEL})')
+    print(f'http://localhost:{PORT} 을 브라우저로 여세요  (Claude: {MODEL} · Codex: {CODEX_MODEL or "기본 모델"})')
     ThreadingHTTPServer(('127.0.0.1', PORT), Handler).serve_forever()

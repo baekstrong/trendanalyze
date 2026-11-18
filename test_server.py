@@ -57,3 +57,23 @@ assert server.enrich('audience', {'videoId': 'x'}) == {'videoId': 'x'}
 for t in server.TASKS.values():
     json.dumps(t['schema'])
 print('ok')
+
+# Codex 모드
+s = server.strict_schema(server.TASKS['reason']['schema'])
+assert s['additionalProperties'] is False and s['properties']['content']['additionalProperties'] is False
+assert 'additionalProperties' not in server.TASKS['reason']['schema']  # 원본은 그대로
+for t in server.TASKS.values():  # OpenAI 구조화 출력은 모든 속성이 required여야 한다
+    def check(n):
+        if isinstance(n, dict):
+            if n.get('type') == 'object':
+                assert set(n['properties']) == set(n['required']), n['required']
+            for v in n.values():
+                check(v)
+        elif isinstance(n, list):
+            for v in n:
+                check(v)
+    check(t['schema'])
+cmd = server.codex_cmd('s.json', 'o.json', ['a.jpg'])
+assert cmd[0].endswith(('codex', 'codex.cmd', 'codex.exe')) and cmd[1] == 'exec' and 'read-only' in cmd and cmd[-3:] == ['-i', 'a.jpg', '-']
+assert set(server.ENGINES) == {'claude', 'codex'}
+print('ok codex')

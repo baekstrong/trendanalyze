@@ -82,6 +82,10 @@
     <button data-view="collected">수집한 영상</button>
   </nav>
   <input id="key" type="password" placeholder="YouTube API 키" autocomplete="off" style="width:160px">
+  <select id="engine" title="AI 분석에 쓸 내 구독 (이 컴퓨터에 로그인된 것)">
+    <option value="claude">AI: Claude Code</option>
+    <option value="codex">AI: Codex</option>
+  </select>
   <span id="status"></span>
 </header>
 <div class="bar" data-for="video">
@@ -220,6 +224,8 @@ let sort = { k: null, dir: -1 };
 
 $('key').value = store.get('apiKey', '');
 $('key').onchange = () => store.set('apiKey', $('key').value.trim());
+$('engine').value = store.get('engine', 'claude');
+$('engine').onchange = () => store.set('engine', $('engine').value);
 
 function addQuota(units) {
   const today = new Date().toISOString().slice(0, 10);   // 쿼터는 태평양 시간 자정 리셋이라 근사치
@@ -501,7 +507,7 @@ const CATEGORY = { 1: '영화/애니', 2: '자동차', 10: '음악', 15: '동물
 const stat = (label, value, sub = '') => `<div><small>${label}</small><b>${value}</b><small>${sub}</small></div>`;
 const pct = (a, b) => (b ? (a / b * 100).toFixed(2) + '%' : '-');
 
-// AI 분석: server.py가 claude -p로 중계. 결과는 영상별로 저장해 다시 부르지 않는다
+// AI 분석: server.py가 claude -p 또는 codex exec로 중계. 결과는 영상별로 저장해 다시 부르지 않는다
 let detailCtx = null;
 const list = (a) => (a || []).map((x) => `<li>${esc(x)}</li>`).join('');
 const chips = (a) => `<div class="tags">${(a || []).map((x) => `<span>${esc(x)}</span>`).join('')}</div>`;
@@ -562,7 +568,7 @@ function reasonPayload(id, row, v, thumb, recent, recentList, comments) {
 async function callAI(task, data, key, force) {
   const cached = store.get(key, null);
   if (cached && !force) return cached;
-  const res = await fetch('/ai', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ task, data }) });
+  const res = await fetch('/ai', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ task, data, engine: $('engine').value }) });
   const body = await res.json().catch(() => ({ error: 'server.py로 연 화면에서만 AI를 쓸 수 있어요' }));
   if (!res.ok) throw new Error(body.error);
   const saved = { at: Date.now(), result: body.result };
