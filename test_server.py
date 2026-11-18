@@ -75,5 +75,6 @@ for t in server.TASKS.values():  # OpenAI 구조화 출력은 모든 속성이 r
     check(t['schema'])
 cmd = server.codex_cmd('s.json', 'o.json', ['a.jpg'])
 assert cmd[0].endswith(('codex', 'codex.cmd', 'codex.exe')) and cmd[1] == 'exec' and 'read-only' in cmd and cmd[-3:] == ['-i', 'a.jpg', '-']
+assert '--ignore-user-config' in cmd and cmd[cmd.index('shell_tool') - 1] == '--disable'  # 남이 쓴 댓글로 셸·MCP를 못 부르게
 assert set(server.ENGINES) == {'claude', 'codex'}
 print('ok codex')

@@ -324,11 +324,34 @@ def ask_claude(task, data):
     raise RuntimeError((p.stderr or 'Claude 응답 없음').strip()[-500:])
 
 
+# 유튜브 제목·댓글은 남이 쓴 글이라 지시가 숨어 있을 수 있다. Codex가 셸·MCP·플러그인 등 도구를 못 쓰게 끈다.
+CODEX_DISABLED = ['shell_tool', 'unified_exec', 'apps', 'plugins', 'hooks', 'browser_use', 'browser_use_external',
+                  'in_app_browser', 'computer_use', 'image_generation', 'multi_agent', 'goals', 'skill_search',
+                  'tool_suggest', 'sleep_tool']
+
+
+def codex_user_defaults():
+    """사용자 설정 파일은 MCP 서버·훅까지 불러오므로 무시하고, 모델과 추론 강도만 가져온다"""
+    try:
+        import tomllib
+        conf = tomllib.loads((Path(os.environ.get('CODEX_HOME') or Path.home() / '.codex') / 'config.toml').read_text())
+    except Exception:  # noqa: BLE001 - 설정이 없으면 Codex 기본값
+        return {}
+    return {k: conf[k] for k in ('model', 'model_reasoning_effort') if isinstance(conf.get(k), str)}
+
+
 def codex_cmd(schema_file, out_file, images):
-    cmd = [shutil.which('codex') or 'codex', 'exec', '--skip-git-repo-check', '--ephemeral', '--sandbox', 'read-only', '-C', WORKDIR,
-           '--output-schema', schema_file, '-o', out_file, '--color', 'never']
-    if CODEX_MODEL:
-        cmd += ['-m', CODEX_MODEL]
+    conf = codex_user_defaults()
+    cmd = [shutil.which('codex') or 'codex', 'exec', '--skip-git-repo-check', '--ephemeral', '--ignore-user-config',
+           '--ignore-rules', '--sandbox', 'read-only', '-C', WORKDIR, '-c', 'approval_policy="never"',
+           '-c', 'web_search="disabled"', '--output-schema', schema_file, '-o', out_file, '--color', 'never']
+    for f in CODEX_DISABLED:
+        cmd += ['--disable', f]
+    model = CODEX_MODEL or conf.get('model')
+    if model:
+        cmd += ['-m', model]
+    if conf.get('model_reasoning_effort'):
+        cmd += ['-c', f'model_reasoning_effort="{conf["model_reasoning_effort"]}"']
     for f in images:
         cmd += ['-i', f]
     return cmd + ['-']  # 프롬프트는 stdin으로
@@ -345,7 +368,7 @@ def ask_codex(task, data):
             images.append(str(f))
         schema_file, out_file = str(Path(d, 'schema.json')), str(Path(d, 'out.json'))
         Path(schema_file).write_text(json.dumps(strict_schema(TASKS[task]['schema']), ensure_ascii=False))
-        prompt = f'{SYSTEM}\n파일을 읽거나 명령을 실행하지 말고, 아래 내용과 첨부 이미지만 보고 답한다.\n\n{prompt_text(task, data)}'
+        prompt = f'{SYSTEM}\n도구를 쓰지 말고 아래 내용과 첨부 이미지만 보고 답한다.\n\n{prompt_text(task, data)}'
         try:
             p = subprocess.run(codex_cmd(schema_file, out_file, images), input=prompt, capture_output=True,
                                text=True, timeout=600, cwd=WORKDIR)
